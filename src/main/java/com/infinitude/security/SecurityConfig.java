@@ -81,8 +81,8 @@ public class SecurityConfig {
     private CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(allowedOrigins);
-        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
-        configuration.setAllowedHeaders(List.of("Content-Type", "Accept"));
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+        configuration.setAllowedHeaders(List.of("Content-Type", "Accept", "X-Requested-With"));
         // Required so the browser sends/receives the httpOnly auth cookie cross-port (frontend
         // dev server vs backend) - CORS is intentionally restricted to known origins above so
         // this doesn't open the door to arbitrary sites (§11 item 8, §17.6).

@@ -1,5 +1,4 @@
 /**
- * Business logic services: {@code NotesService}, {@code TocService}, {@code MarkdownService},
- * {@code PdfService}, {@code FileService}, and orchestration of {@code AiService} calls.
+ * Business logic for owned TOC records and Gemini table-of-contents generation.
  */
 package com.infinitude.service;

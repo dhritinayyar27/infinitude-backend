@@ -87,4 +87,5 @@ public class User {
     public void setLastLoginAt(Instant lastLoginAt) {
         this.lastLoginAt = lastLoginAt;
     }
+
 }

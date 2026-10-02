@@ -72,6 +72,27 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.BAD_REQUEST, "BAD_REQUEST", ex.getMessage(), request);
     }
 
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<ErrorResponse> handleIllegalState(IllegalStateException ex, HttpServletRequest request) {
+        return build(HttpStatus.CONFLICT, "INVALID_STATE", ex.getMessage(), request);
+    }
+
+    @ExceptionHandler(NoteNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNoteNotFound(NoteNotFoundException ex, HttpServletRequest request) {
+        return build(HttpStatus.NOT_FOUND, "NOTE_NOT_FOUND", ex.getMessage(), request);
+    }
+
+    @ExceptionHandler(NoteAccessDeniedException.class)
+    public ResponseEntity<ErrorResponse> handleNoteAccessDenied(NoteAccessDeniedException ex, HttpServletRequest request) {
+        return build(HttpStatus.FORBIDDEN, "NOTE_ACCESS_DENIED", ex.getMessage(), request);
+    }
+
+    @ExceptionHandler(AiGenerationException.class)
+    public ResponseEntity<ErrorResponse> handleAiGeneration(AiGenerationException ex, HttpServletRequest request) {
+        log.error("AI generation failed on {}: {}", request.getRequestURI(), ex.getMessage());
+        return build(HttpStatus.BAD_GATEWAY, "AI_GENERATION_FAILED", ex.getMessage(), request);
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleUnexpected(Exception ex, HttpServletRequest request) {
         log.error("Unhandled exception on {}", request.getRequestURI(), ex);
