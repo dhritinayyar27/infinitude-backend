@@ -45,5 +45,6 @@ Snapshot: 2026-10-02. Covers the current worktree relative to `HEAD`, including 
 - A clean backend compile and focused TOC tests passed.
 - Five regression tests cover server-key selection, missing-key behavior, AI failure state, saved section IDs, and header-based Gemini authentication.
 - Ten additional focused tests cover email-only OTP behavior and Spring `.env` integration; all 15 focused tests passed.
-- Command: `./mvnw.cmd -Dtest=DotenvEnvironmentPostProcessorTests,EmailServiceImplTests,TocServiceTests test` from this directory.
+- Full backend suite passed: 16 tests, zero failures/errors, including the application context smoke test with mocked mail.
+- Command: `./mvnw.cmd test` from this directory.
 - No real Gemini or SMTP calls were made. Live mail delivery requires provider credentials; authenticated database/SMTP integration was not verified by these focused tests.
