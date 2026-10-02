@@ -5,6 +5,7 @@ import com.infinitude.ai.GeminiAiService;
 import com.infinitude.ai.prompt.TocPromptBuilder;
 import com.infinitude.ai.model.TocAiResponse;
 import com.infinitude.ai.model.TocSection;
+import com.infinitude.config.GeminiConfiguration;
 import com.infinitude.dto.TocSectionDto;
 import com.infinitude.exception.AiGenerationException;
 import com.infinitude.model.Note;
@@ -42,7 +43,7 @@ class TocServiceTests {
         when(ai.generateTableOfContents("Java", "beginner", "server-key", "gemini-2.5-flash"))
             .thenReturn(response);
 
-        Note result = new TocService(repository, ai, "server-key", "gemini-2.5-flash")
+        Note result = new TocService(repository, ai, new GeminiConfiguration("server-key", "", "gemini-2.5-flash"))
                 .generateToc("note", "user");
 
         assertEquals(NotesStatus.TOC_READY, result.getStatus());
@@ -57,9 +58,11 @@ class TocServiceTests {
         when(repository.findById("note")).thenReturn(Optional.of(note));
 
         assertThrows(IllegalStateException.class,
-                () -> new TocService(repository, ai, "", "gemini-2.5-flash").generateToc("note", "user"));
+                () -> new TocService(repository, ai, new GeminiConfiguration(" , , ", " , ", null))
+                        .generateToc("note", "user"));
 
         assertEquals(NotesStatus.DRAFT, note.getStatus());
+        assertNull(note.getUpdatedAt());
         verify(repository, never()).save(any());
         verifyNoInteractions(ai);
     }
@@ -72,7 +75,8 @@ class TocServiceTests {
             .thenThrow(new AiGenerationException("QUOTA_EXCEEDED"));
 
         assertThrows(AiGenerationException.class,
-            () -> new TocService(repository, ai, "server-key", "gemini-2.5-flash").generateToc("note", "user"));
+            () -> new TocService(repository, ai, new GeminiConfiguration("server-key", "", "gemini-2.5-flash"))
+                    .generateToc("note", "user"));
 
         assertEquals(NotesStatus.FAILED, note.getStatus());
         verify(repository, times(2)).save(note);
@@ -88,7 +92,7 @@ class TocServiceTests {
         when(repository.findById("note")).thenReturn(Optional.of(note));
         when(repository.save(any(Note.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        Note result = new TocService(repository, ai, "server-key", "gemini-2.5-flash")
+        Note result = new TocService(repository, ai, new GeminiConfiguration("server-key", "", "gemini-2.5-flash"))
             .updateToc("note", "user", List.of(new TocSectionDto("existing-section", "Edited title", 1)));
 
         assertEquals("existing-section", result.getSections().get(0).getSectionId());
@@ -96,6 +100,42 @@ class TocServiceTests {
         assertEquals(NotesStatus.TOC_READY, result.getStatus());
         verifyNoInteractions(ai);
         }
+
+    @Test
+    void passesNormalizedPluralPoolAndPreferredModelThroughBackendOnlyAiParameter() {
+        Note note = draft();
+        when(repository.findById("note")).thenReturn(Optional.of(note));
+        when(repository.save(any(Note.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        TocAiResponse response = new TocAiResponse();
+        TocSection section = new TocSection();
+        section.setTitle("Basics");
+        response.setSections(List.of(section));
+        when(ai.generateTableOfContents("Java", "beginner", "first,second", "custom-model"))
+                .thenReturn(response);
+
+        new TocService(repository, ai,
+                new GeminiConfiguration("legacy", " first, ,second, first ", " custom-model "))
+                .generateToc("note", "user");
+
+        verify(ai).generateTableOfContents("Java", "beginner", "first,second", "custom-model");
+        assertEquals(NotesStatus.TOC_READY, note.getStatus());
+    }
+
+    @Test
+    void passesLegacyCommaPoolWithDefaultModel() {
+        Note note = draft();
+        when(repository.findById("note")).thenReturn(Optional.of(note));
+        when(repository.save(any(Note.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        TocAiResponse response = new TocAiResponse();
+        response.setSections(List.of());
+        when(ai.generateTableOfContents("Java", "beginner", "first,second", "gemini-3.8-flash"))
+                .thenReturn(response);
+
+        new TocService(repository, ai, new GeminiConfiguration(" first,second,first ", "", ""))
+                .generateToc("note", "user");
+
+        verify(ai).generateTableOfContents("Java", "beginner", "first,second", "gemini-3.8-flash");
+    }
 
         @Test
         void geminiUsesHeaderInsteadOfKeyInUrl() {

@@ -30,6 +30,21 @@ class DotenvEnvironmentPostProcessorTests {
 
     @Test
     void loadsBackendEnvWhenLaunchedFromWorkspaceRoot() throws IOException {
+        Path backend = Files.createDirectory(directory.resolve("Backend"));
+        Path legacy = Files.createDirectory(directory.resolve("infinitude-backend"));
+        Files.writeString(legacy.resolve(".env"), "GEMINI_API_KEY=wrong-legacy\n");
+        Files.writeString(directory.resolve(".env"), "GEMINI_API_KEY=wrong-root\n");
+        writeEnv(backend);
+        StandardEnvironment environment = isolatedEnvironment();
+
+        processor.load(environment, directory);
+
+        assertEquals("fixture-key", environment.getProperty("GEMINI_API_KEY"));
+        assertEquals("fixture-first, fixture-second", environment.getProperty("GEMINI_API_KEYS"));
+    }
+
+    @Test
+    void preservesLegacyWorkspaceLoading() throws IOException {
         Path backend = Files.createDirectory(directory.resolve("infinitude-backend"));
         Files.writeString(directory.resolve(".env"), "MAIL_HOST=wrong-root.example.com\n");
         writeEnv(backend);
@@ -56,6 +71,8 @@ class DotenvEnvironmentPostProcessorTests {
         assertEquals("password#with=punctuation", environment.getProperty("spring.mail.password"));
         assertEquals("sender@example.com", environment.getProperty("MAIL_FROM"));
         assertEquals("fixture-key", environment.getProperty("infinitude.gemini.api-key"));
+        assertEquals("fixture-first, fixture-second", environment.getProperty("infinitude.gemini.api-keys"));
+        assertEquals("fixture-model", environment.getProperty("infinitude.gemini.model"));
         assertEquals("false", environment.getProperty("spring.mail.properties.mail.smtp.auth"));
     }
 
@@ -80,6 +97,31 @@ class DotenvEnvironmentPostProcessorTests {
         StandardEnvironment environment = isolatedEnvironment();
 
         assertDoesNotThrow(() -> processor.load(environment, directory));
+        assertNull(environment.getPropertySources().get("backendDotenv"));
+    }
+
+    @Test
+    void emptyBackendDirectoriesDoNotHideDirectCwdEnv() throws IOException {
+        Files.createDirectory(directory.resolve("Backend"));
+        Files.createDirectory(directory.resolve("infinitude-backend"));
+        writeEnv(directory);
+        StandardEnvironment environment = isolatedEnvironment();
+
+        processor.load(environment, directory);
+
+        assertEquals("fixture-key", environment.getProperty("GEMINI_API_KEY"));
+    }
+
+    @Test
+    void malformedDotenvFailsWithSafeMessageAndNoSecretBearingCause() throws IOException {
+        Files.writeString(directory.resolve(".env"), "invalid line containing fixture-secret\n");
+        StandardEnvironment environment = isolatedEnvironment();
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> processor.load(environment, directory));
+
+        assertEquals("Unable to load backend environment configuration.", exception.getMessage());
+        assertNull(exception.getCause());
         assertNull(environment.getPropertySources().get("backendDotenv"));
     }
 
@@ -132,6 +174,8 @@ class DotenvEnvironmentPostProcessorTests {
                 MAIL_FROM=sender@example.com
                 MAIL_SMTP_AUTH=false
                 GEMINI_API_KEY=fixture-key
+                GEMINI_API_KEYS="fixture-first, fixture-second"
+                GEMINI_MODEL=fixture-model
                 """);
     }
 }

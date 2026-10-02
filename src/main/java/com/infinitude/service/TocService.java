@@ -3,6 +3,7 @@ package com.infinitude.service;
 import com.infinitude.ai.AiService;
 import com.infinitude.ai.model.TocAiResponse;
 import com.infinitude.ai.model.TocSection;
+import com.infinitude.config.GeminiConfiguration;
 import com.infinitude.dto.TocSectionDto;
 import com.infinitude.exception.AiGenerationException;
 import com.infinitude.exception.NoteAccessDeniedException;
@@ -13,7 +14,6 @@ import com.infinitude.model.Section;
 import com.infinitude.model.SectionStatus;
 import com.infinitude.repository.NotesRepository;
 import org.bson.types.ObjectId;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -25,17 +25,14 @@ public class TocService {
 
     private final NotesRepository notesRepository;
     private final AiService aiService;
-    private final String apiKey;
-    private final String model;
+    private final GeminiConfiguration geminiConfiguration;
 
     public TocService(NotesRepository notesRepository,
                       AiService aiService,
-                      @Value("${infinitude.gemini.api-key:${GEMINI_API_KEY:}}") String apiKey,
-                      @Value("${infinitude.gemini.model:gemini-2.5-flash}") String model) {
+                      GeminiConfiguration geminiConfiguration) {
         this.notesRepository = notesRepository;
         this.aiService = aiService;
-        this.apiKey = apiKey;
-        this.model = model;
+        this.geminiConfiguration = geminiConfiguration;
     }
 
     /**
@@ -43,8 +40,8 @@ public class TocService {
      */
     public Note generateToc(String noteId, String userId) {
         Note note = loadAndCheckOwnership(noteId, userId);
-        if (apiKey == null || apiKey.isBlank()) {
-            throw new IllegalStateException("TOC generation is unavailable: configure GEMINI_API_KEY on the server.");
+        if (geminiConfiguration.keyPool().isEmpty()) {
+            throw new IllegalStateException("TOC generation is unavailable: configure Gemini credentials on the server.");
         }
 
         NotesStatus current = note.getStatus();
@@ -58,7 +55,8 @@ public class TocService {
 
         TocAiResponse tocResponse;
         try {
-            tocResponse = aiService.generateTableOfContents(note.getTopic(), note.getDifficulty(), apiKey, model);
+            tocResponse = aiService.generateTableOfContents(note.getTopic(), note.getDifficulty(),
+                    geminiConfiguration.keyPool().commaSeparatedKeys(), geminiConfiguration.preferredModel());
         } catch (AiGenerationException e) {
             note.setStatus(NotesStatus.FAILED);
             note.setUpdatedAt(Instant.now());
