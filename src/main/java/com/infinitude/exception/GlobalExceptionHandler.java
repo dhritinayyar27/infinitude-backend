@@ -82,6 +82,11 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.NOT_FOUND, "NOTE_NOT_FOUND", ex.getMessage(), request);
     }
 
+    @ExceptionHandler(SectionNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleSectionNotFound(SectionNotFoundException ex, HttpServletRequest request) {
+        return build(HttpStatus.NOT_FOUND, "SECTION_NOT_FOUND", ex.getMessage(), request);
+    }
+
     @ExceptionHandler(NoteAccessDeniedException.class)
     public ResponseEntity<ErrorResponse> handleNoteAccessDenied(NoteAccessDeniedException ex, HttpServletRequest request) {
         return build(HttpStatus.FORBIDDEN, "NOTE_ACCESS_DENIED", ex.getMessage(), request);

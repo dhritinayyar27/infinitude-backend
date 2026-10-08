@@ -145,6 +145,133 @@ class SavedTocMongoTests {
         assertTrue(repository.existsById(draft.getId()));
     }
 
+    @Test
+    void failedTopicRegenerationUpdatesOnlyThatTopicThroughRestAndMongo() {
+        ObjectMapper mapper = new ObjectMapper();
+        RestTemplate rest = new RestTemplate();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(rest).build();
+        GeminiAiService ai = new GeminiAiService(rest, "https://gemini.test", mapper, new TocPromptBuilder());
+        GeminiConfiguration config = new GeminiConfiguration("test-key", "", "gemini-2.5-flash");
+        ThreadPoolTaskExecutor executor = mock(ThreadPoolTaskExecutor.class);
+        doAnswer(call -> { call.getArgument(0, Runnable.class).run(); return null; })
+                .when(executor).execute(any(Runnable.class));
+        NotesGenerationService generation = new NotesGenerationService(notes, repository, workflow,
+                ai, config, new SectionPromptBuilder(mapper), executor);
+        Note note = partiallyFailedNote();
+
+        server.expect(requestTo("https://gemini.test/v1beta/models/gemini-2.5-flash:generateContent"))
+                .andRespond(withSuccess("{\"candidates\":[]}", MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://gemini.test/v1beta/models/gemini-2.5-flash:generateContent"))
+                .andRespond(withSuccess("{\"candidates\":[]}", MediaType.APPLICATION_JSON));
+        generation.regenerateSection(note.getId(), "s1", "test-user");
+        Note stillFailed = notes.getNote(note.getId(), "test-user");
+        assertEquals(NotesStatus.FAILED, stillFailed.getStatus());
+        assertEquals(SectionStatus.FAILED, stillFailed.getSections().get(1).getStatus());
+        assertNotNull(stillFailed.getSections().get(1).getFailureReason());
+        assertEquals("Kept zero", stillFailed.getSections().get(0).getContent());
+        server.verify();
+        server.reset();
+
+        expect(server, mapper, new SectionAiResponse("Detailed explanation ".repeat(80),
+                List.of("Concept one", "Concept two", "Concept three"), List.of("Worked example"),
+                NotesTestContent.subtopics()));
+        generation.regenerateSection(note.getId(), "s1", "test-user");
+        Note complete = notes.getNote(note.getId(), "test-user");
+        assertEquals(NotesStatus.COMPLETED, complete.getStatus());
+        assertEquals("Kept zero", complete.getSections().get(0).getContent());
+        assertEquals("Kept two", complete.getSections().get(2).getContent());
+        assertEquals(SectionStatus.COMPLETED, complete.getSections().get(1).getStatus());
+        assertTrue(complete.getSections().get(1).getContent().contains("Definitions"));
+        assertTrue(complete.getMarkdownContent().contains("## 1.1 Variables"));
+        assertThrows(IllegalStateException.class,
+                () -> generation.regenerateSection(note.getId(), "s1", "test-user"));
+        server.verify();
+    }
+
+    @Test
+    void concurrentSectionClaimsSucceedOnceAndNeverTouchOtherSections() throws Exception {
+        Note note = partiallyFailedNote();
+        Note first = notes.getNote(note.getId(), "test-user");
+        Note second = notes.getNote(note.getId(), "test-user");
+        try (ExecutorService pool = Executors.newFixedThreadPool(2)) {
+            List<Future<Boolean>> results = pool.invokeAll(List.of(
+                    () -> claimSection(first), () -> claimSection(second)));
+            assertEquals(1, results.stream().filter(result -> {
+                try { return result.get(); } catch (Exception ex) { throw new AssertionError(ex); }
+            }).count());
+        }
+        Note claimed = notes.getNote(note.getId(), "test-user");
+        assertEquals(NotesStatus.GENERATING_NOTES, claimed.getStatus());
+        assertEquals(SectionStatus.GENERATING, claimed.getSections().get(1).getStatus());
+        assertEquals("Kept zero", claimed.getSections().get(0).getContent());
+        assertEquals(SectionStatus.COMPLETED, claimed.getSections().get(2).getStatus());
+        assertThrows(IllegalStateException.class, () -> notes.deleteNote(note.getId(), "test-user"));
+
+        workflow.recoverInterrupted();
+        Note recovered = notes.getNote(note.getId(), "test-user");
+        assertEquals(NotesStatus.FAILED, recovered.getStatus());
+        assertEquals(SectionStatus.FAILED, recovered.getSections().get(1).getStatus());
+        assertNotNull(recovered.getSections().get(1).getFailureReason());
+        assertEquals("Kept two", recovered.getSections().get(2).getContent());
+    }
+
+    @Test
+    void multiTopicClaimMarksOnlyFailedTargetsAndRejectsCompletedIds() {
+        Note note = partiallyFailedNote();
+        Note stored = repository.findById(note.getId()).orElseThrow();
+        stored.getSections().get(2).setStatus(SectionStatus.FAILED);
+        stored.getSections().get(2).setContent(null);
+        repository.save(stored);
+
+        Note fresh = notes.getNote(note.getId(), "test-user");
+        assertThrows(IllegalStateException.class,
+                () -> workflow.claimFailedSections(fresh, List.of("s1", "s0")));
+        Note unchanged = notes.getNote(note.getId(), "test-user");
+        assertEquals(NotesStatus.FAILED, unchanged.getStatus());
+        assertEquals(SectionStatus.FAILED, unchanged.getSections().get(1).getStatus());
+
+        workflow.claimFailedSections(unchanged, List.of("s1", "s2"));
+        Note claimed = notes.getNote(note.getId(), "test-user");
+        assertEquals(NotesStatus.GENERATING_NOTES, claimed.getStatus());
+        assertEquals(SectionStatus.COMPLETED, claimed.getSections().get(0).getStatus());
+        assertEquals("Kept zero", claimed.getSections().get(0).getContent());
+        assertEquals(SectionStatus.GENERATING, claimed.getSections().get(1).getStatus());
+        assertEquals(SectionStatus.GENERATING, claimed.getSections().get(2).getStatus());
+        assertNull(claimed.getSections().get(1).getFailureReason());
+        assertThrows(IllegalStateException.class,
+                () -> workflow.claimFailedSections(claimed, List.of("s1", "s2")));
+    }
+
+    private Note partiallyFailedNote() {
+        Note note = notes.createNote("test-user", "Java", "BEGINNER", "DETAILED");
+        note.setTocSaved(true);
+        note.setTocRevision(1);
+        note.setStatus(NotesStatus.FAILED);
+        List<Section> sections = new java.util.ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            Section section = new Section();
+            section.setSectionId("s" + i);
+            section.setTitle(List.of("Java Basics", "Variables", "Data Types").get(i));
+            section.setLevel(i == 0 ? 1 : 2);
+            section.setOrder(i + 1);
+            section.setStatus(i == 1 ? SectionStatus.FAILED : SectionStatus.COMPLETED);
+            section.setContent(i == 1 ? null : List.of("Kept zero", "", "Kept two").get(i));
+            section.setFailureReason(i == 1 ? "Earlier failure" : null);
+            sections.add(section);
+        }
+        note.setSections(sections);
+        return repository.save(note);
+    }
+
+    private boolean claimSection(Note note) {
+        try {
+            workflow.claimFailedSections(note, List.of("s1"));
+            return true;
+        } catch (IllegalStateException ex) {
+            return false;
+        }
+    }
+
     private boolean claim(Note note) {
         try {
             workflow.replaceIdle(note, 0);

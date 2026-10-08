@@ -20,6 +20,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -35,9 +36,11 @@ class NotesGenerationServiceTests {
     private final NotesGenerationService service = new NotesGenerationService(notes, repository, workflow,
             ai, new GeminiConfiguration("key", "", "model"), prompts, executor);
     private Note note;
+    private final List<Long> sleeps = new ArrayList<>();
 
     @BeforeEach
     void setup() {
+        service.setSleeper(sleeps::add);
         note = new Note("user", "Java", "Java", "BEGINNER", "DETAILED");
         note.setId("note");
         note.setStatus(NotesStatus.TOC_READY);
@@ -109,7 +112,7 @@ class NotesGenerationServiceTests {
     void oneFailureDoesNotSkipOtherTopicsOrReportCompleteDocument() {
         when(ai.generateSection(anyString(), anyString(), anyString()))
                 .thenReturn(validResponse())
-                .thenThrow(new AiGenerationException("QUOTA_EXCEEDED"))
+                .thenThrow(new AiGenerationException("AI_GENERATION_FAILED: HTTP 400"))
                 .thenReturn(validResponse());
         service.generateSavedTopics(note);
         assertEquals(NotesStatus.FAILED, note.getStatus());
@@ -193,15 +196,291 @@ class NotesGenerationServiceTests {
 
     @ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(strings = {
-            "AI_GENERATION_TIMEOUT", "QUOTA_EXCEEDED", "AI_GENERATION_FAILED: HTTP 500"
+            "AI_GENERATION_TIMEOUT", "QUOTA_EXCEEDED", "AI_GENERATION_FAILED: HTTP 500",
+            "AI_GENERATION_FAILED: Unable to read or reach Gemini API."
     })
-    void transportAndQuotaFailuresAreNotRetriedAsQualityFailures(String error) {
+    void transientFailuresAreRetriedWithBackoffAndRecover(String error) {
         when(ai.generateSection(anyString(), anyString(), anyString()))
-                .thenThrow(new AiGenerationException(error)).thenReturn(validResponse(), validResponse());
+                .thenThrow(new AiGenerationException(error)).thenReturn(validResponse());
         service.generateSavedTopics(note);
-        verify(ai, times(3)).generateSection(anyString(), anyString(), anyString());
+        verify(ai, times(4)).generateSection(anyString(), anyString(), anyString());
+        assertEquals(1, sleeps.size());
+        assertTrue(sleeps.getFirst() > 0);
+        assertTrue(note.getSections().stream().allMatch(s -> s.getStatus() == SectionStatus.COMPLETED));
+        assertEquals(NotesStatus.COMPLETED, note.getStatus());
+    }
+
+    @Test
+    void persistentServerErrorGivesUpAfterBoundedRetries() {
+        when(ai.generateSection(anyString(), anyString(), anyString()))
+                .thenThrow(new AiGenerationException("AI_GENERATION_FAILED: HTTP 503"))
+                .thenThrow(new AiGenerationException("AI_GENERATION_FAILED: HTTP 503"))
+                .thenThrow(new AiGenerationException("AI_GENERATION_FAILED: HTTP 503"))
+                .thenReturn(validResponse());
+        service.generateSavedTopics(note);
+        verify(ai, times(5)).generateSection(anyString(), anyString(), anyString());
+        assertEquals(List.of(2000L, 4000L), sleeps);
         assertEquals(SectionStatus.FAILED, note.getSections().getFirst().getStatus());
         assertEquals(SectionStatus.COMPLETED, note.getSections().getLast().getStatus());
+        assertEquals(NotesStatus.FAILED, note.getStatus());
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "AI_GENERATION_BLOCKED", "AI_GENERATION_FAILED: HTTP 400"
+    })
+    void permanentFailuresAreNeverRetried(String error) {
+        when(ai.generateSection(anyString(), anyString(), anyString()))
+                .thenThrow(new AiGenerationException(error)).thenReturn(validResponse());
+        service.generateSavedTopics(note);
+        verify(ai, times(3)).generateSection(anyString(), anyString(), anyString());
+        assertTrue(sleeps.isEmpty());
+        assertEquals(SectionStatus.FAILED, note.getSections().getFirst().getStatus());
+    }
+
+    @Test
+    void bulkRegenerationOfTenTopicsCallsAiOnlyForTheThreeFailedOnes() {
+        tenTopicsWithThreeFailures();
+        runInline();
+        List<String> before = note.getSections().stream().map(Section::getContent).toList();
+        List<Integer> expectedOrder = new ArrayList<>(List.of(1, 4, 8));
+        when(ai.generateSection(anyString(), anyString(), anyString())).thenAnswer(call -> {
+            // Same prompt builder and live note context as full generation, in TOC order.
+            assertEquals(prompts.build(note, expectedOrder.removeFirst()), call.getArgument(0));
+            return validResponse();
+        });
+
+        service.regenerateFailedSections("note", List.of("topic-2", "topic-5", "topic-9"), "user");
+
+        verify(ai, times(3)).generateSection(anyString(), eq("key"), eq("model"));
+        assertTrue(expectedOrder.isEmpty());
+        verify(workflow).claimFailedSections(note, Set.of("topic-2", "topic-5", "topic-9"));
+        verify(workflow, never()).replaceIdle(any(), anyLong());
+        for (int i = 0; i < 10; i++) {
+            if (i != 1 && i != 4 && i != 8) {
+                assertEquals(before.get(i), note.getSections().get(i).getContent(), "topic " + (i + 1) + " untouched");
+            }
+        }
+        assertTrue(note.getSections().stream().allMatch(s -> s.getStatus() == SectionStatus.COMPLETED));
+        assertEquals(NotesStatus.COMPLETED, note.getStatus());
+    }
+
+    @Test
+    void generateOnFailedNoteWithTenTopicsRunsOnlyTheThreeFailedOnes() {
+        tenTopicsWithThreeFailures();
+        runInline();
+        when(ai.generateSection(anyString(), anyString(), anyString())).thenReturn(validResponse());
+        service.generate("note", "user");
+        verify(ai, times(3)).generateSection(anyString(), anyString(), anyString());
+        verify(workflow, never()).replaceIdle(any(), anyLong());
+        assertEquals("Original content 1", note.getSections().get(0).getContent());
+        assertEquals("Original content 10", note.getSections().get(9).getContent());
+        assertEquals(NotesStatus.COMPLETED, note.getStatus());
+    }
+
+    @Test
+    void bulkRegenerationKeepsStillFailingTopicsRetryable() {
+        tenTopicsWithThreeFailures();
+        runInline();
+        when(ai.generateSection(anyString(), anyString(), anyString()))
+                .thenReturn(validResponse())
+                .thenThrow(new AiGenerationException("AI_GENERATION_FAILED: HTTP 400"))
+                .thenReturn(validResponse());
+        service.regenerateFailedSections("note", List.of("topic-2", "topic-5", "topic-9"), "user");
+        assertEquals(SectionStatus.COMPLETED, note.getSections().get(1).getStatus());
+        assertEquals(SectionStatus.FAILED, note.getSections().get(4).getStatus());
+        assertNotNull(note.getSections().get(4).getFailureReason());
+        assertEquals(SectionStatus.COMPLETED, note.getSections().get(8).getStatus());
+        assertEquals(NotesStatus.FAILED, note.getStatus());
+    }
+
+    @Test
+    void bulkRegenerationRejectsCompletedTopicsAndEmptyRequests() {
+        tenTopicsWithThreeFailures();
+        assertThrows(IllegalStateException.class,
+                () -> service.regenerateFailedSections("note", List.of("topic-2", "topic-1"), "user"));
+        assertThrows(IllegalArgumentException.class,
+                () -> service.regenerateFailedSections("note", List.of(), "user"));
+        assertThrows(com.infinitude.exception.SectionNotFoundException.class,
+                () -> service.regenerateFailedSections("note", List.of("missing"), "user"));
+        verify(workflow, never()).claimFailedSections(any(), anyCollection());
+        verifyNoInteractions(ai, executor);
+    }
+
+    @Test
+    void generateOnFailedNoteWithoutFailedTopicsIsRejected() {
+        note.setStatus(NotesStatus.FAILED);
+        note.getSections().forEach(s -> { s.setStatus(SectionStatus.COMPLETED); s.setContent("Done"); });
+        assertThrows(IllegalStateException.class, () -> service.generate("note", "user"));
+        verifyNoInteractions(ai, executor);
+        verify(workflow, never()).replaceIdle(any(), anyLong());
+    }
+
+    @Test
+    void regeneratingFailedTopicPreservesCompletedTopicsAndCompletesNote() {
+        markPartiallyFailed();
+        runInline();
+        when(ai.generateSection(anyString(), eq("key"), eq("model"))).thenReturn(validResponse());
+        service.regenerateSection("note", "section-1", "user");
+        verify(workflow).claimFailedSections(note, Set.of("section-1"));
+        verify(ai, times(1)).generateSection(anyString(), anyString(), anyString());
+        assertEquals("Kept zero", note.getSections().get(0).getContent());
+        assertEquals("Kept two", note.getSections().get(2).getContent());
+        assertEquals(SectionStatus.COMPLETED, note.getSections().get(1).getStatus());
+        assertNull(note.getSections().get(1).getFailureReason());
+        assertTrue(note.getSections().get(1).getContent().contains("## Definitions"));
+        assertEquals(NotesStatus.COMPLETED, note.getStatus());
+        assertTrue(note.getMarkdownContent().contains("Kept zero"));
+        assertTrue(note.getMarkdownContent().contains("## 1.1 Variables"));
+    }
+
+    @Test
+    void regenerationUsesSameContextAsOriginalGeneration() {
+        markPartiallyFailed();
+        runInline();
+        String expectedPrompt = prompts.build(note, 1);
+        when(ai.generateSection(anyString(), anyString(), anyString())).thenReturn(validResponse());
+        service.regenerateSection("note", "section-1", "user");
+        verify(ai).generateSection(expectedPrompt, "key", "model");
+    }
+
+    @Test
+    void failedRegenerationKeepsTopicRetryableWithSpecificReason() {
+        markPartiallyFailed();
+        runInline();
+        when(ai.generateSection(anyString(), anyString(), anyString()))
+                .thenThrow(new AiGenerationException("AI_GENERATION_TIMEOUT: slow"));
+        service.regenerateSection("note", "section-1", "user");
+        verify(ai, times(2)).generateSection(anyString(), anyString(), anyString());
+        assertEquals(List.of(2000L), sleeps);
+        assertEquals(SectionStatus.FAILED, note.getSections().get(1).getStatus());
+        assertNull(note.getSections().get(1).getContent());
+        assertTrue(note.getSections().get(1).getFailureReason().contains("too long"));
+        assertEquals("Kept zero", note.getSections().get(0).getContent());
+        assertEquals(NotesStatus.FAILED, note.getStatus());
+        assertNull(note.getMarkdownContent());
+    }
+
+    @Test
+    void invalidRegeneratedContentIsRetriedOnceThenMarkedFailed() {
+        markPartiallyFailed();
+        runInline();
+        var incomplete = new SectionAiResponse("Short", List.of("A", "B", "C"), List.of("Example"));
+        when(ai.generateSection(anyString(), anyString(), anyString())).thenReturn(incomplete);
+        service.regenerateSection("note", "section-1", "user");
+        verify(ai, times(2)).generateSection(anyString(), anyString(), anyString());
+        assertEquals(SectionStatus.FAILED, note.getSections().get(1).getStatus());
+        assertTrue(note.getSections().get(1).getFailureReason().contains("incomplete or invalid"));
+        assertEquals(NotesStatus.FAILED, note.getStatus());
+    }
+
+    @Test
+    void onlyFailedTopicsCanBeRegenerated() {
+        markPartiallyFailed();
+        assertThrows(IllegalStateException.class, () -> service.regenerateSection("note", "section-0", "user"));
+        assertThrows(com.infinitude.exception.SectionNotFoundException.class,
+                () -> service.regenerateSection("note", "missing", "user"));
+        note.setStatus(NotesStatus.GENERATING_NOTES);
+        assertThrows(IllegalStateException.class, () -> service.regenerateSection("note", "section-1", "user"));
+        verify(workflow, never()).claimFailedSections(any(), anyCollection());
+        verifyNoInteractions(executor, ai);
+    }
+
+    @Test
+    void duplicateRegenerationClaimNeverSchedulesWork() {
+        markPartiallyFailed();
+        doThrow(new IllegalStateException("Already claimed")).when(workflow).claimFailedSections(any(), anyCollection());
+        assertThrows(IllegalStateException.class, () -> service.regenerateSection("note", "section-1", "user"));
+        verifyNoInteractions(executor, ai);
+    }
+
+    @Test
+    void busyQueueReturnsRegeneratingTopicToFailed() {
+        markPartiallyFailed();
+        doThrow(new TaskRejectedException("Busy")).when(executor).execute(any(Runnable.class));
+        assertThrows(IllegalStateException.class, () -> service.regenerateSection("note", "section-1", "user"));
+        assertEquals(SectionStatus.FAILED, note.getSections().get(1).getStatus());
+        assertNotNull(note.getSections().get(1).getFailureReason());
+        assertEquals(NotesStatus.FAILED, note.getStatus());
+        assertEquals("Kept zero", note.getSections().get(0).getContent());
+        verify(repository).save(note);
+    }
+
+    @Test
+    void retryingFailedNoteRegeneratesOnlyFailedTopics() {
+        markPartiallyFailed();
+        runInline();
+        when(ai.generateSection(anyString(), anyString(), anyString())).thenReturn(validResponse());
+        service.generate("note", "user");
+        verify(ai, times(1)).generateSection(anyString(), anyString(), anyString());
+        assertEquals("Kept zero", note.getSections().get(0).getContent());
+        assertEquals("Kept two", note.getSections().get(2).getContent());
+        assertEquals(NotesStatus.COMPLETED, note.getStatus());
+    }
+
+    @Test
+    void rejectedCredentialsStopFurtherGuaranteedFailingCalls() {
+        when(ai.generateSection(anyString(), anyString(), anyString()))
+                .thenThrow(new AiGenerationException("INVALID_API_KEY"));
+        service.generateSavedTopics(note);
+        verify(ai, times(1)).generateSection(anyString(), anyString(), anyString());
+        assertTrue(note.getSections().stream().allMatch(s -> s.getStatus() == SectionStatus.FAILED
+                && s.getFailureReason().contains("credentials")));
+        assertEquals(NotesStatus.FAILED, note.getStatus());
+    }
+
+    private void markPartiallyFailed() {
+        note.setStatus(NotesStatus.FAILED);
+        for (int i = 0; i < 3; i++) {
+            Section section = note.getSections().get(i);
+            section.setStatus(i == 1 ? SectionStatus.FAILED : SectionStatus.COMPLETED);
+            section.setContent(i == 1 ? null : List.of("Kept zero", "", "Kept two").get(i));
+            section.setFailureReason(i == 1 ? "Earlier failure" : null);
+        }
+        stubClaim();
+    }
+
+    private void stubClaim() {
+        doAnswer(call -> {
+            Note claimed = call.getArgument(0);
+            java.util.Collection<String> ids = call.getArgument(1);
+            claimed.setStatus(NotesStatus.GENERATING_NOTES);
+            claimed.setMarkdownContent(null);
+            for (Section section : claimed.getSections()) {
+                if (ids.contains(section.getSectionId())) {
+                    assertEquals(SectionStatus.FAILED, section.getStatus(), "only FAILED topics may be claimed");
+                    section.setStatus(SectionStatus.GENERATING);
+                    section.setFailureReason(null);
+                }
+            }
+            return claimed;
+        }).when(workflow).claimFailedSections(any(), anyCollection());
+    }
+
+    /** 10 topics: 2, 5 and 9 (1-based) failed, the rest completed with distinct content. */
+    private void tenTopicsWithThreeFailures() {
+        List<Section> sections = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            Section section = new Section();
+            section.setSectionId("topic-" + (i + 1));
+            section.setTitle("Topic " + (i + 1));
+            section.setLevel(1);
+            section.setOrder(i + 1);
+            boolean failed = i == 1 || i == 4 || i == 8;
+            section.setStatus(failed ? SectionStatus.FAILED : SectionStatus.COMPLETED);
+            section.setContent(failed ? null : "Original content " + (i + 1));
+            section.setFailureReason(failed ? "Generation failed" : null);
+            sections.add(section);
+        }
+        note.setSections(sections);
+        note.setStatus(NotesStatus.FAILED);
+        stubClaim();
+    }
+
+
+    private void runInline() {
+        doAnswer(call -> { call.getArgument(0, Runnable.class).run(); return null; })
+                .when(executor).execute(any(Runnable.class));
     }
 
     private SectionAiResponse validResponse() {

@@ -47,6 +47,66 @@ class NotesControllerTests {
     }
 
     @Test
+    void sectionRegenerationReturns202WithRegeneratingSection() throws Exception {
+        Note note = new Note("user", "Java", "Java", "BEGINNER", "DETAILED");
+        note.setId("note");
+        note.setTocSaved(true);
+        note.setStatus(NotesStatus.GENERATING_NOTES);
+        com.infinitude.model.Section section = new com.infinitude.model.Section();
+        section.setSectionId("section-1");
+        section.setTitle("Variables");
+        section.setStatus(com.infinitude.model.SectionStatus.GENERATING);
+        note.setSections(List.of(section));
+        when(generation.regenerateSection("note", "section-1", "user")).thenReturn(note);
+        mvc.perform(post("/api/notes/note/sections/section-1/regenerate").principal(principal))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.status").value("GENERATING_NOTES"))
+                .andExpect(jsonPath("$.sections[0].status").value("GENERATING"));
+    }
+
+    @Test
+    void regeneratingUnknownSectionIs404AndNonFailedSectionIs409() throws Exception {
+        when(generation.regenerateSection("note", "missing", "user"))
+                .thenThrow(new com.infinitude.exception.SectionNotFoundException("missing"));
+        when(generation.regenerateSection("note", "done", "user"))
+                .thenThrow(new IllegalStateException("Only failed topics can be regenerated."));
+        mvc.perform(post("/api/notes/note/sections/missing/regenerate").principal(principal))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error").value("SECTION_NOT_FOUND"));
+        mvc.perform(post("/api/notes/note/sections/done/regenerate").principal(principal))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("INVALID_STATE"));
+    }
+
+    @Test
+    void bulkRegenerationPassesOnlyRequestedFailedIdsAndReturns202() throws Exception {
+        Note note = new Note("user", "Java", "Java", "BEGINNER", "DETAILED");
+        note.setId("note");
+        note.setTocSaved(true);
+        note.setStatus(NotesStatus.GENERATING_NOTES);
+        when(generation.regenerateFailedSections("note", List.of("t2", "t5", "t9"), "user")).thenReturn(note);
+        mvc.perform(post("/api/notes/note/sections/regenerate").principal(principal)
+                        .contentType("application/json").content("{\"sectionIds\":[\"t2\",\"t5\",\"t9\"]}"))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.status").value("GENERATING_NOTES"));
+        verify(generation).regenerateFailedSections("note", List.of("t2", "t5", "t9"), "user");
+        verify(generation, never()).generate(anyString(), anyString());
+    }
+
+    @Test
+    void bulkRegenerationRejectsEmptyIdListAndNonFailedTopics() throws Exception {
+        mvc.perform(post("/api/notes/note/sections/regenerate").principal(principal)
+                        .contentType("application/json").content("{\"sectionIds\":[]}"))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(generation);
+        when(generation.regenerateFailedSections("note", List.of("done"), "user"))
+                .thenThrow(new IllegalStateException("Only failed topics can be regenerated."));
+        mvc.perform(post("/api/notes/note/sections/regenerate").principal(principal)
+                        .contentType("application/json").content("{\"sectionIds\":[\"done\"]}"))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
     void unsavedTocProducesExplicitConflict() throws Exception {
         when(generation.generate("note", "user")).thenThrow(new IllegalStateException("Save the TOC first."));
         mvc.perform(post("/api/notes/note/generate").principal(principal))

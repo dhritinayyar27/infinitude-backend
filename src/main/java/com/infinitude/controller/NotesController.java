@@ -2,6 +2,7 @@ package com.infinitude.controller;
 
 import com.infinitude.dto.CreateNotesRequest;
 import com.infinitude.dto.NotesResponse;
+import com.infinitude.dto.RegenerateSectionsRequest;
 import com.infinitude.dto.UpdateTocRequest;
 import com.infinitude.mapper.NotesMapper;
 import com.infinitude.model.Note;
@@ -42,6 +43,24 @@ public class NotesController {
         AuthenticatedUser user = (AuthenticatedUser) authentication.getPrincipal();
         return ResponseEntity.accepted().body(notesMapper.toResponse(
                 generationService.generate(noteId, user.getUserId())));
+    }
+
+    @PostMapping("/{noteId}/sections/regenerate")
+    public ResponseEntity<NotesResponse> regenerateFailedSections(@PathVariable String noteId,
+                                                                  @Valid @RequestBody RegenerateSectionsRequest request,
+                                                                  Authentication authentication) {
+        AuthenticatedUser user = (AuthenticatedUser) authentication.getPrincipal();
+        return ResponseEntity.accepted().body(notesMapper.toResponse(
+                generationService.regenerateFailedSections(noteId, request.getSectionIds(), user.getUserId())));
+    }
+
+    @PostMapping("/{noteId}/sections/{sectionId}/regenerate")
+    public ResponseEntity<NotesResponse> regenerateSection(@PathVariable String noteId,
+                                                            @PathVariable String sectionId,
+                                                            Authentication authentication) {
+        AuthenticatedUser user = (AuthenticatedUser) authentication.getPrincipal();
+        return ResponseEntity.accepted().body(notesMapper.toResponse(
+                generationService.regenerateSection(noteId, sectionId, user.getUserId())));
     }
 
     // -------------------------------------------------------------------------
