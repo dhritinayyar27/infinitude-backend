@@ -19,6 +19,8 @@ public class Note {
     private String difficulty;
     private String style;
     private NotesStatus status = NotesStatus.DRAFT;
+    private boolean tocSaved;
+    private long tocRevision;
     private List<Section> sections = new ArrayList<>();
     private String markdownContent;
     private String markdownFilePath;
@@ -27,6 +29,11 @@ public class Note {
 
     public Note() {
     }
+
+    public boolean isTocSaved() { return tocSaved; }
+    public void setTocSaved(boolean tocSaved) { this.tocSaved = tocSaved; }
+    public long getTocRevision() { return tocRevision; }
+    public void setTocRevision(long tocRevision) { this.tocRevision = tocRevision; }
 
     public Note(String userId, String topic, String title, String difficulty, String style) {
         this.userId = userId;

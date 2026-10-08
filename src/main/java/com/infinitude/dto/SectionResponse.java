@@ -5,6 +5,10 @@ public class SectionResponse {
     private String sectionId;
     private String title;
     private int order;
+    private int level;
+
+    public int getLevel() { return level; }
+    public void setLevel(int level) { this.level = level; }
     private String content;
     private String status;
     private String failureReason;

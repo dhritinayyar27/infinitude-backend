@@ -9,7 +9,7 @@ import java.util.stream.Stream;
 /** Immutable server-owned Gemini configuration shared by orchestration and AI adapters. */
 @Component
 public final class GeminiConfiguration {
-    public static final String DEFAULT_MODEL = "gemini-3.8-flash";
+    public static final String DEFAULT_MODEL = "gemini-3.5-flash-lite";
     public static final List<String> FALLBACK_MODELS = List.of(
             "gemini-3.8-flash",
             "gemini-3.6-flash",
@@ -28,7 +28,7 @@ public final class GeminiConfiguration {
     public GeminiConfiguration(
             @Value("${infinitude.gemini.api-key:${GEMINI_API_KEY:}}") String legacyKeys,
             @Value("${infinitude.gemini.api-keys:${GEMINI_API_KEYS:}}") String pluralKeys,
-            @Value("${infinitude.gemini.model:${GEMINI_MODEL:gemini-3.8-flash}}") String preferredModel) {
+            @Value("${infinitude.gemini.model:${GEMINI_MODEL:gemini-3.5-flash-lite}}") String preferredModel) {
         this.keyPool = GeminiKeyPool.resolve(legacyKeys, pluralKeys);
         this.preferredModel = normalizeModel(preferredModel);
     }

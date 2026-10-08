@@ -23,6 +23,7 @@ import org.springframework.web.client.RestTemplate;
 import tools.jackson.databind.ObjectMapper;
 
 import java.util.List;
+import java.net.http.HttpTimeoutException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -247,6 +248,88 @@ class GeminiAiServiceTests {
         assertTrue(error.getMessage().startsWith("AI_GENERATION_FAILED"));
         assertSafe(error);
         verify(mock, times(1)).postForEntity(anyString(), any(HttpEntity.class), eq(GeminiResponse.class));
+    }
+
+    @Test
+    void timeoutHasExplicitSafeErrorAndDoesNotRotateKeysOrModels() {
+        RestTemplate mock = mock(RestTemplate.class);
+        when(mock.postForEntity(anyString(), any(HttpEntity.class), eq(GeminiResponse.class)))
+                .thenThrow(new ResourceAccessException(ERROR_BODY, new HttpTimeoutException(ERROR_BODY)));
+        GeminiAiService isolated = new GeminiAiService(mock, BASE, mapper, new TocPromptBuilder());
+
+        AiGenerationException error = assertThrows(AiGenerationException.class,
+                () -> isolated.generateTableOfContents("Java", "BEGINNER", "key-a,key-b", null));
+
+        assertTrue(error.getMessage().startsWith("AI_GENERATION_TIMEOUT"));
+        assertSafe(error);
+        verify(mock, times(1)).postForEntity(anyString(), any(HttpEntity.class), eq(GeminiResponse.class));
+    }
+
+    @Test
+    void lowThinkingIsRebuiltAsZeroBudgetWhenFallingBackTo25Flash() {
+        List<String> candidates = GeminiConfiguration.modelCandidates(null);
+        for (String model : candidates) {
+            server.expect(requestTo(BASE + "/v1beta/models/" + model + ":generateContent"))
+                    .andExpect(request -> {
+                        var body = mapper.readTree(((org.springframework.mock.http.client.MockClientHttpRequest) request)
+                                .getBodyAsString());
+                        var thinking = body.path("generationConfig").path("thinkingConfig");
+                        if ("gemini-2.5-flash".equals(model)) {
+                            assertEquals(0, thinking.path("thinkingBudget").asInt());
+                            assertFalse(thinking.has("thinkingLevel"));
+                        } else if ("gemini-flash-latest".equals(model)) {
+                            assertTrue(thinking.isMissingNode() || thinking.isNull());
+                        } else {
+                            assertEquals("LOW", thinking.path("thinkingLevel").asText());
+                            assertFalse(thinking.has("thinkingBudget"));
+                        }
+                    })
+                    .andRespond("gemini-2.5-flash".equals(model)
+                            ? withSuccess(envelope("{\"sections\":[{\"title\":\"Basics\"}]}"), MediaType.APPLICATION_JSON)
+                            : withStatus(HttpStatus.NOT_FOUND));
+            if ("gemini-2.5-flash".equals(model)) {
+                break;
+            }
+        }
+        assertEquals("Basics", generate("key-a", null).getSections().getFirst().getTitle());
+    }
+
+    @Test
+    void customModelDoesNotReceiveUnsupportedThinkingOptions() {
+        server.expect(requestTo(BASE + "/v1beta/models/custom-model:generateContent"))
+                .andExpect(request -> {
+                    var body = mapper.readTree(((org.springframework.mock.http.client.MockClientHttpRequest) request)
+                            .getBodyAsString());
+                    var thinking = body.path("generationConfig").path("thinkingConfig");
+                    assertTrue(thinking.isMissingNode() || thinking.isNull());
+                })
+                .andRespond(withSuccess(envelope("{\"sections\":[{\"title\":\"Basics\"}]}"), MediaType.APPLICATION_JSON));
+        generate("key-a", "custom-model");
+    }
+
+    @Test
+    void ignoresThoughtPartsAndCombinesMultipartJson() {
+        response(models.getFirst(), "key-a", 200, """
+                {"candidates":[{"finishReason":"STOP","content":{"parts":[
+                  {"thought":true,"text":"Internal reasoning"},
+                  {"text":"{\\\"sections\\\":["},
+                  {"text":"{\\\"title\\\":\\\"Basics\\\"}]}"}
+                ]}}]}
+                """);
+        assertEquals("Basics", generate("key-a", null).getSections().getFirst().getTitle());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"MAX_TOKENS", "SAFETY", "RECITATION"})
+    void incompleteResponseIsRejectedEvenIfItsTextIsValidJson(String finishReason) {
+        response(models.getFirst(), "key-a", 200,
+                envelope("{\"sections\":[{\"title\":\"Partial TOC\"}]}")
+                        .replace("\"finishReason\":null", "\"finishReason\":\"" + finishReason + "\""));
+        AiGenerationException error = assertThrows(AiGenerationException.class,
+                () -> generate("key-a,key-b", null));
+        assertTrue(error.getMessage().contains("did not complete"));
+        assertSafe(error);
+        assertEquals(1, attempts.get());
     }
 
     @Test

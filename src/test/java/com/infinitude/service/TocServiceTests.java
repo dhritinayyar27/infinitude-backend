@@ -13,6 +13,7 @@ import com.infinitude.model.NotesStatus;
 import com.infinitude.model.Section;
 import com.infinitude.repository.NotesRepository;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestTemplate;
@@ -30,6 +31,12 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 class TocServiceTests {
     private final NotesRepository repository = mock(NotesRepository.class);
     private final AiService ai = mock(AiService.class);
+    private final NoteWorkflowStore workflow = mock(NoteWorkflowStore.class);
+
+    @BeforeEach
+    void setupWorkflow() {
+        when(workflow.replaceIdle(any(Note.class), anyLong())).thenAnswer(call -> call.getArgument(0));
+    }
 
     @Test
     void generatesTocWithServerKeyWithoutUserSettings() {
@@ -43,7 +50,7 @@ class TocServiceTests {
         when(ai.generateTableOfContents("Java", "beginner", "server-key", "gemini-2.5-flash"))
             .thenReturn(response);
 
-        Note result = new TocService(repository, ai, new GeminiConfiguration("server-key", "", "gemini-2.5-flash"))
+        Note result = new TocService(repository, ai, new GeminiConfiguration("server-key", "", "gemini-2.5-flash"), workflow)
                 .generateToc("note", "user");
 
         assertEquals(NotesStatus.TOC_READY, result.getStatus());
@@ -58,7 +65,7 @@ class TocServiceTests {
         when(repository.findById("note")).thenReturn(Optional.of(note));
 
         assertThrows(IllegalStateException.class,
-                () -> new TocService(repository, ai, new GeminiConfiguration(" , , ", " , ", null))
+                () -> new TocService(repository, ai, new GeminiConfiguration(" , , ", " , ", null), workflow)
                         .generateToc("note", "user"));
 
         assertEquals(NotesStatus.DRAFT, note.getStatus());
@@ -75,11 +82,11 @@ class TocServiceTests {
             .thenThrow(new AiGenerationException("QUOTA_EXCEEDED"));
 
         assertThrows(AiGenerationException.class,
-            () -> new TocService(repository, ai, new GeminiConfiguration("server-key", "", "gemini-2.5-flash"))
+            () -> new TocService(repository, ai, new GeminiConfiguration("server-key", "", "gemini-2.5-flash"), workflow)
                     .generateToc("note", "user"));
 
         assertEquals(NotesStatus.FAILED, note.getStatus());
-        verify(repository, times(2)).save(note);
+        verify(repository).save(note);
         }
 
         @Test
@@ -92,7 +99,7 @@ class TocServiceTests {
         when(repository.findById("note")).thenReturn(Optional.of(note));
         when(repository.save(any(Note.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        Note result = new TocService(repository, ai, new GeminiConfiguration("server-key", "", "gemini-2.5-flash"))
+        Note result = new TocService(repository, ai, new GeminiConfiguration("server-key", "", "gemini-2.5-flash"), workflow)
             .updateToc("note", "user", List.of(new TocSectionDto("existing-section", "Edited title", 1)));
 
         assertEquals("existing-section", result.getSections().get(0).getSectionId());
@@ -114,11 +121,31 @@ class TocServiceTests {
                 .thenReturn(response);
 
         new TocService(repository, ai,
-                new GeminiConfiguration("legacy", " first, ,second, first ", " custom-model "))
+                new GeminiConfiguration("legacy", " first, ,second, first ", " custom-model "), workflow)
                 .generateToc("note", "user");
 
         verify(ai).generateTableOfContents("Java", "beginner", "first,second", "custom-model");
         assertEquals(NotesStatus.TOC_READY, note.getStatus());
+    }
+
+    @Test
+    void timeoutMarksNoteFailedAndPreservesExistingToc() {
+        Note note = draft();
+        Section section = new Section();
+        section.setSectionId("existing-section");
+        section.setTitle("Existing TOC");
+        note.setSections(List.of(section));
+        when(repository.findById("note")).thenReturn(Optional.of(note));
+        when(ai.generateTableOfContents(anyString(), anyString(), anyString(), anyString()))
+                .thenThrow(new AiGenerationException("AI_GENERATION_TIMEOUT"));
+
+        assertThrows(AiGenerationException.class,
+                () -> new TocService(repository, ai, new GeminiConfiguration("server-key", "", "gemini-3.8-flash"), workflow)
+                        .generateToc("note", "user"));
+
+        assertEquals(NotesStatus.FAILED, note.getStatus());
+        assertEquals("Existing TOC", note.getSections().getFirst().getTitle());
+        verify(repository).save(note);
     }
 
     @Test
@@ -127,14 +154,16 @@ class TocServiceTests {
         when(repository.findById("note")).thenReturn(Optional.of(note));
         when(repository.save(any(Note.class))).thenAnswer(invocation -> invocation.getArgument(0));
         TocAiResponse response = new TocAiResponse();
-        response.setSections(List.of());
-        when(ai.generateTableOfContents("Java", "beginner", "first,second", "gemini-3.8-flash"))
+        TocSection section = new TocSection();
+        section.setTitle("Basics");
+        response.setSections(List.of(section));
+        when(ai.generateTableOfContents("Java", "beginner", "first,second", "gemini-3.5-flash-lite"))
                 .thenReturn(response);
 
-        new TocService(repository, ai, new GeminiConfiguration(" first,second,first ", "", ""))
+        new TocService(repository, ai, new GeminiConfiguration(" first,second,first ", "", ""), workflow)
                 .generateToc("note", "user");
 
-        verify(ai).generateTableOfContents("Java", "beginner", "first,second", "gemini-3.8-flash");
+        verify(ai).generateTableOfContents("Java", "beginner", "first,second", "gemini-3.5-flash-lite");
     }
 
         @Test

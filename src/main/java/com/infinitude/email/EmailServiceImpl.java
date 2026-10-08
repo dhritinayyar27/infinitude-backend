@@ -1,14 +1,21 @@
 package com.infinitude.email;
 
 import com.infinitude.model.OtpPurpose;
+import jakarta.mail.MessagingException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.MailException;
-import org.springframework.mail.SimpleMailMessage;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StreamUtils;
+import org.springframework.web.util.HtmlUtils;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Concrete {@link EmailService} using {@link JavaMailSender} (spring-boot-starter-mail), with
@@ -31,9 +38,14 @@ public class EmailServiceImpl implements EmailService {
 
     private final JavaMailSender mailSender;
     private final String mailFrom;
+    private final long expirationSeconds;
+    private final String template;
+    private final ClassPathResource logo = new ClassPathResource("email/infinitude-logo.png");
+
     public EmailServiceImpl(ObjectProvider<JavaMailSender> mailSenderProvider,
                              @Value("${spring.mail.host:}") String mailHost,
-                             @Value("${MAIL_FROM:}") String mailFrom) {
+                             @Value("${MAIL_FROM:}") String mailFrom,
+                             @Value("${OTP_EXPIRATION_SECONDS:300}") long expirationSeconds) {
         JavaMailSender candidate = mailSenderProvider.getIfAvailable();
         if (candidate == null || mailHost == null || mailHost.isBlank()
                 || mailFrom == null || mailFrom.isBlank()) {
@@ -42,19 +54,33 @@ public class EmailServiceImpl implements EmailService {
         }
         this.mailSender = candidate;
         this.mailFrom = mailFrom;
+        if (expirationSeconds <= 0) {
+            throw new IllegalStateException("OTP_EXPIRATION_SECONDS must be positive.");
+        }
+        this.expirationSeconds = expirationSeconds;
+        try (var stream = new ClassPathResource("email/otp.html").getInputStream()) {
+            this.template = StreamUtils.copyToString(stream, StandardCharsets.UTF_8);
+            if (!logo.exists()) {
+                throw new IllegalStateException("Infinitude email logo is missing.");
+            }
+        } catch (IOException ex) {
+            throw new IllegalStateException("Unable to load the Infinitude OTP email template.", ex);
+        }
     }
 
     @Override
     public void sendOtpEmail(String toEmail, String otp, OtpPurpose purpose) {
         try {
-            SimpleMailMessage message = new SimpleMailMessage();
+            var mimeMessage = mailSender.createMimeMessage();
+            var message = new MimeMessageHelper(mimeMessage, true, StandardCharsets.UTF_8.name());
             message.setFrom(mailFrom);
             message.setTo(toEmail);
             message.setSubject(subjectFor(purpose));
-            message.setText(bodyFor(otp, purpose));
-            mailSender.send(message);
+            message.setText(bodyFor(otp, purpose), true);
+            message.addInline("infinitude-logo", logo, "image/png");
+            mailSender.send(mimeMessage);
             log.info("OTP email dispatched for purpose={} (recipient omitted from logs)", purpose);
-        } catch (MailException ex) {
+        } catch (MailException | MessagingException ex) {
             log.error("Failed to send OTP email for purpose={} (error type={})", purpose,
                     ex.getClass().getSimpleName());
         }
@@ -68,9 +94,12 @@ public class EmailServiceImpl implements EmailService {
     }
 
     private String bodyFor(String otp, OtpPurpose purpose) {
-        String action = purpose == OtpPurpose.SIGNUP ? "complete your signup" : "log in";
-        return "Use the code below to " + action + " to Infinitude:\n\n" + otp
-                + "\n\nThis code expires shortly and can only be used once. "
-                + "If you did not request this, you can safely ignore this email.";
+        String action = purpose == OtpPurpose.SIGNUP ? "create your account" : "log in to your account";
+        String validity = expirationSeconds % 60 == 0
+                ? (expirationSeconds / 60) + " minute" + (expirationSeconds == 60 ? "" : "s")
+                : expirationSeconds + " second" + (expirationSeconds == 1 ? "" : "s");
+        return template.replace("{{action}}", action)
+                .replace("{{validity}}", validity)
+                .replace("{{otp}}", HtmlUtils.htmlEscape(otp));
     }
 }

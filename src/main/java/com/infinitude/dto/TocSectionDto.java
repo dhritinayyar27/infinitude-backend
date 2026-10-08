@@ -1,14 +1,29 @@
 package com.infinitude.dto;
 
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
+import com.fasterxml.jackson.annotation.JsonCreator;
+
 public class TocSectionDto {
 
     private String sectionId;
+    @NotBlank
+    @Size(max = 300)
     private String title;
     private int order;
+    @Min(1)
+    @Max(5)
+    private int level = 1;
+
+    public int getLevel() { return level; }
+    public void setLevel(int level) { this.level = level; }
 
     public TocSectionDto() {
     }
 
+    @JsonCreator(mode = JsonCreator.Mode.DISABLED)
     public TocSectionDto(String sectionId, String title, int order) {
         this.sectionId = sectionId;
         this.title = title;

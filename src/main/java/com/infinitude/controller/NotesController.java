@@ -8,6 +8,7 @@ import com.infinitude.model.Note;
 import com.infinitude.security.AuthenticatedUser;
 import com.infinitude.service.NotesService;
 import com.infinitude.service.TocService;
+import com.infinitude.service.NotesGenerationService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -23,13 +24,24 @@ public class NotesController {
     private final NotesService notesService;
     private final TocService tocService;
     private final NotesMapper notesMapper;
+    private final NotesGenerationService generationService;
 
     public NotesController(NotesService notesService,
                            TocService tocService,
-                           NotesMapper notesMapper) {
+                           NotesMapper notesMapper,
+                           NotesGenerationService generationService) {
         this.notesService = notesService;
         this.tocService = tocService;
         this.notesMapper = notesMapper;
+        this.generationService = generationService;
+    }
+
+    @PostMapping("/{noteId}/generate")
+    public ResponseEntity<NotesResponse> generateNotes(@PathVariable String noteId,
+                                                        Authentication authentication) {
+        AuthenticatedUser user = (AuthenticatedUser) authentication.getPrincipal();
+        return ResponseEntity.accepted().body(notesMapper.toResponse(
+                generationService.generate(noteId, user.getUserId())));
     }
 
     // -------------------------------------------------------------------------

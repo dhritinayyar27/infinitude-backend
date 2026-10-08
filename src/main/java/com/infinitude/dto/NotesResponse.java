@@ -12,6 +12,13 @@ public class NotesResponse {
     private String difficulty;
     private String style;
     private String status;
+    private boolean tocSaved;
+    private long tocRevision;
+
+    public boolean isTocSaved() { return tocSaved; }
+    public void setTocSaved(boolean tocSaved) { this.tocSaved = tocSaved; }
+    public long getTocRevision() { return tocRevision; }
+    public void setTocRevision(long tocRevision) { this.tocRevision = tocRevision; }
     private List<SectionResponse> sections;
     private String markdownContent;
     private Instant createdAt;

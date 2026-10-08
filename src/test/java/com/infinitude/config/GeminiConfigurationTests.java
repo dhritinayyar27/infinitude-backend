@@ -38,7 +38,7 @@ class GeminiConfigurationTests {
         GeminiConfiguration configuration = new GeminiConfiguration("legacy", " new,other,new ", null);
 
         assertEquals(List.of("new", "other"), configuration.keyPool().keys());
-        assertEquals("gemini-3.8-flash", configuration.preferredModel());
+        assertEquals("gemini-3.5-flash-lite", configuration.preferredModel());
         assertEquals("GeminiKeyPool[REDACTED]", configuration.keyPool().toString());
         assertEquals("GeminiConfiguration[REDACTED]", configuration.toString());
     }
@@ -51,8 +51,12 @@ class GeminiConfigurationTests {
                 "gemini-3.1-flash-lite-preview", "gemini-flash-lite-latest");
 
         assertEquals(expected, GeminiConfiguration.FALLBACK_MODELS);
-        assertEquals(expected, GeminiConfiguration.modelCandidates(null));
-        assertEquals(expected, GeminiConfiguration.modelCandidates(" "));
+        List<String> defaultCandidates = List.of("gemini-3.5-flash-lite", "gemini-3.8-flash",
+                "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash",
+                "gemini-flash-latest", "gemini-2.5-flash", "gemini-2.5-flash-lite",
+                "gemini-3.1-flash-lite-preview", "gemini-flash-lite-latest");
+        assertEquals(defaultCandidates, GeminiConfiguration.modelCandidates(null));
+        assertEquals(defaultCandidates, GeminiConfiguration.modelCandidates(" "));
         assertThrows(UnsupportedOperationException.class,
                 () -> GeminiConfiguration.FALLBACK_MODELS.add("other"));
     }
@@ -104,7 +108,7 @@ class GeminiConfigurationTests {
         try (AnnotationConfigApplicationContext context = context(environment)) {
             GeminiConfiguration configuration = context.getBean(GeminiConfiguration.class);
             assertEquals(List.of("first", "second"), configuration.keyPool().keys());
-            assertEquals("gemini-3.8-flash", configuration.preferredModel());
+            assertEquals("gemini-3.5-flash-lite", configuration.preferredModel());
         }
     }
 

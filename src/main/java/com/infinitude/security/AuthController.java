@@ -2,6 +2,7 @@ package com.infinitude.security;
 
 import com.infinitude.dto.auth.AuthResponse;
 import com.infinitude.dto.auth.MessageResponse;
+import com.infinitude.dto.auth.OtpSentResponse;
 import com.infinitude.dto.auth.SendOtpRequest;
 import com.infinitude.dto.auth.SignupRequest;
 import com.infinitude.dto.auth.UserResponse;
@@ -10,6 +11,7 @@ import com.infinitude.dto.auth.VerifySignupOtpRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpHeaders;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -34,18 +36,24 @@ public class AuthController {
 
     private final AuthService authService;
     private final RateLimiter rateLimiter;
+    private final long resendCooldownSeconds;
+    private final long expiresInSeconds;
 
-    public AuthController(AuthService authService, RateLimiter rateLimiter) {
+    public AuthController(AuthService authService, RateLimiter rateLimiter,
+                          @Value("${OTP_RESEND_COOLDOWN_SECONDS:30}") long resendCooldownSeconds,
+                          @Value("${OTP_EXPIRATION_SECONDS:300}") long expiresInSeconds) {
         this.authService = authService;
         this.rateLimiter = rateLimiter;
+        this.resendCooldownSeconds = resendCooldownSeconds;
+        this.expiresInSeconds = expiresInSeconds;
     }
 
     @PostMapping("/login/send-otp")
-    public ResponseEntity<MessageResponse> loginSendOtp(@Valid @RequestBody SendOtpRequest request) {
+    public ResponseEntity<OtpSentResponse> loginSendOtp(@Valid @RequestBody SendOtpRequest request) {
         rateLimiter.checkAllowedOrThrow("login:" + request.getEmail().toLowerCase());
         authService.sendLoginOtp(request.getEmail());
         // §17.5: identical response regardless of whether the email exists.
-        return ResponseEntity.ok(new MessageResponse(GENERIC_OTP_SENT_MESSAGE));
+        return ResponseEntity.ok(new OtpSentResponse(GENERIC_OTP_SENT_MESSAGE, resendCooldownSeconds, expiresInSeconds));
     }
 
     @PostMapping("/login/verify-otp")
@@ -57,11 +65,11 @@ public class AuthController {
     }
 
     @PostMapping("/signup/send-otp")
-    public ResponseEntity<MessageResponse> signupSendOtp(@Valid @RequestBody SignupRequest request) {
+    public ResponseEntity<OtpSentResponse> signupSendOtp(@Valid @RequestBody SignupRequest request) {
         rateLimiter.checkAllowedOrThrow("signup:" + request.getEmail().toLowerCase());
         authService.sendSignupOtp(request.getName(), request.getEmail());
         // §17.5: identical response regardless of whether the email is already registered.
-        return ResponseEntity.ok(new MessageResponse(GENERIC_OTP_SENT_MESSAGE));
+        return ResponseEntity.ok(new OtpSentResponse(GENERIC_OTP_SENT_MESSAGE, resendCooldownSeconds, expiresInSeconds));
     }
 
     @PostMapping("/signup/verify-otp")

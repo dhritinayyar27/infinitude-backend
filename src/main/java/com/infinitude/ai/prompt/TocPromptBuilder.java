@@ -13,13 +13,7 @@ public class TocPromptBuilder {
      * @return the complete prompt string
      */
     public String build(String topic, String difficulty) {
-        int minSections;
-        int maxSections;
-        switch (difficulty.toUpperCase()) {
-            case "BEGINNER" -> { minSections = 6; maxSections = 12; }
-            case "ADVANCED" -> { minSections = 10; maxSections = 18; }
-            default -> { minSections = 8; maxSections = 15; } // INTERMEDIATE
-        }
+        DifficultyProfile profile = DifficultyProfile.from(difficulty);
 
         return """
                 You are an expert curriculum designer. Generate a comprehensive table of contents for a \
@@ -28,9 +22,16 @@ public class TocPromptBuilder {
                 Requirements:
                 - Generate between %d and %d top-level sections
                 - Each section title must be a clear, descriptive heading
-                - Subsections are optional but encouraged for complex topics
-                - The sections should flow logically from foundational concepts to advanced ones
-                - Tailor the depth and terminology to the %s difficulty level
+                - Add specific subtopics wherever necessary to fully cover a section; do not repeat parent titles
+                - Keep the total number of topics (parents plus subtopics) at or below 100
+                - Titles must be non-blank, at most 300 characters, and contain no numbering
+                - Arrange prerequisites before dependent topics and avoid duplicate or overlapping topics
+                - Every listed topic will receive its own detailed notes, including parent topics
+                - Keep all topics strictly related to the requested subject
+                - Tailor scope, prerequisites and terminology to the selected level, not just the number of sections
+                Selected %s level requirements:
+                %s
+                Maintain this level throughout the outline; do not escalate beyond it just to fill sections.
 
                 Return ONLY valid JSON in this exact structure, with no additional text, no markdown fences, \
                 and no explanation:
@@ -46,6 +47,7 @@ public class TocPromptBuilder {
 
                 Topic: %s
                 Difficulty: %s
-                """.formatted(difficulty, topic, minSections, maxSections, difficulty, topic, difficulty);
+                """.formatted(profile.name(), topic, profile.minSections(), profile.maxSections(),
+                profile.name(), profile.guidance(), topic, difficulty);
     }
 }

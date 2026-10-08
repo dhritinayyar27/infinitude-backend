@@ -13,6 +13,10 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
+import java.net.SocketTimeoutException;
+import java.net.http.HttpTimeoutException;
+import java.util.concurrent.TimeoutException;
+
 /** The only component that constructs Gemini HTTP requests. Never retains credentials. */
 final class GeminiRestClient {
     enum Failure { NONE, MODEL_UNAVAILABLE, INVALID_KEY, QUOTA }
@@ -52,6 +56,13 @@ final class GeminiRestClient {
             // can contain secrets, including in nested exception messages.
             throw new AiGenerationException("AI_GENERATION_FAILED: HTTP " + status);
         } catch (RestClientException | JacksonException e) {
+            for (Throwable cause = e; cause != null; cause = cause.getCause()) {
+                if (cause instanceof SocketTimeoutException || cause instanceof HttpTimeoutException
+                        || cause instanceof TimeoutException) {
+                    throw new AiGenerationException(
+                            "AI_GENERATION_TIMEOUT: Gemini took too long to respond. Please try again.");
+                }
+            }
             throw new AiGenerationException("AI_GENERATION_FAILED: Unable to read or reach Gemini API.");
         }
     }

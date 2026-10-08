@@ -12,8 +12,10 @@ import java.util.List;
 public class NotesService {
 
     private final NotesRepository notesRepository;
-    public NotesService(NotesRepository notesRepository) {
+    private final NoteWorkflowStore workflowStore;
+    public NotesService(NotesRepository notesRepository, NoteWorkflowStore workflowStore) {
         this.notesRepository = notesRepository;
+        this.workflowStore = workflowStore;
     }
 
     /**
@@ -48,7 +50,7 @@ public class NotesService {
      */
     public void deleteNote(String noteId, String userId) {
         Note note = getNote(noteId, userId);
-        notesRepository.delete(note);
+        workflowStore.deleteIdle(note);
     }
 
 }

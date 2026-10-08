@@ -9,12 +9,16 @@ public class Section {
     private String sectionId;
     private String title;
     private int order;
+    private int level = 1;
     private String content;
     private SectionStatus status = SectionStatus.PENDING;
     private String failureReason;
 
     public Section() {
     }
+
+    public int getLevel() { return level; }
+    public void setLevel(int level) { this.level = level; }
 
     public String getSectionId() {
         return sectionId;

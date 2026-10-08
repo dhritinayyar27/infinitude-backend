@@ -209,6 +209,8 @@ class GeminiPoolIntegrationTests {
         copy.setTopic(source.getTopic());
         copy.setDifficulty(source.getDifficulty());
         copy.setStatus(source.getStatus());
+        copy.setTocSaved(source.isTocSaved());
+        copy.setTocRevision(source.getTocRevision());
         copy.setUpdatedAt(source.getUpdatedAt());
         copy.setSections(new ArrayList<>(source.getSections()));
         return copy;
@@ -242,7 +244,12 @@ class GeminiPoolIntegrationTests {
                 return note;
             });
             context.setEnvironment(environment);
-            context.registerBean(RestTemplate.class, () -> template);
+            context.registerBean("restTemplate", RestTemplate.class, () -> template);
+            context.registerAlias("restTemplate", "notesRestTemplate");
+            var workflow = mock(com.infinitude.service.NoteWorkflowStore.class);
+            when(workflow.replaceIdle(any(Note.class), anyLong()))
+                    .thenAnswer(invocation -> repository.save(invocation.getArgument(0)));
+            context.registerBean(com.infinitude.service.NoteWorkflowStore.class, () -> workflow);
             context.registerBean(ObjectMapper.class, () -> mapper);
             context.registerBean(NotesRepository.class, () -> repository);
             context.register(GeminiConfiguration.class, GeminiAiService.class,

@@ -20,6 +20,8 @@ public class NotesMapper {
         response.setTopic(note.getTopic());
         response.setDifficulty(note.getDifficulty());
         response.setStyle(note.getStyle());
+        response.setTocSaved(note.isTocSaved());
+        response.setTocRevision(note.getTocRevision());
         response.setStatus(note.getStatus() != null ? note.getStatus().name() : null);
         response.setSections(note.getSections() != null
                 ? note.getSections().stream()
@@ -33,13 +35,15 @@ public class NotesMapper {
     }
 
     public SectionResponse toSectionResponse(Section section) {
-        return new SectionResponse(
+        SectionResponse response = new SectionResponse(
                 section.getSectionId(),
                 section.getTitle(),
                 section.getOrder(),
                 section.getContent(),
                 section.getStatus() != null ? section.getStatus().name() : null,
                 section.getFailureReason());
+        response.setLevel(section.getLevel());
+        return response;
     }
 
     public List<NotesResponse> toResponseList(List<Note> notes) {
