@@ -36,6 +36,11 @@ keep the Dockerfile and build context relative to that directory.
 | `MAIL_FROM` | Verified sender email address. Required for application startup. |
 
 Other optional settings and defaults are listed in [.env.example](.env.example).
+`MONGODB_URI` is required; there is no hardcoded localhost fallback. Local
+development reads it from the backend `.env`. On Render, set `MONGODB_URI` in
+the service's environment settings and redeploy after changing it. Render's
+environment value takes precedence over a local `.env`. The backend uses
+Spring Boot 4's `spring.mongodb.uri` property to configure the connection.
 Keep secrets in Render's environment settings, never in the Dockerfile, Git, or
 frontend variables. The Docker build uses an allowlisted context: local `.env`
 files, Git metadata, tests, and prebuilt `target` files are not included.

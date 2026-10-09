@@ -7,6 +7,8 @@ import org.springframework.boot.EnvironmentPostProcessor;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.context.config.ConfigDataEnvironmentPostProcessor;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.boot.mongodb.autoconfigure.MongoProperties;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.MapPropertySource;
@@ -74,6 +76,34 @@ class DotenvEnvironmentPostProcessorTests {
         assertEquals("fixture-first, fixture-second", environment.getProperty("infinitude.gemini.api-keys"));
         assertEquals("fixture-model", environment.getProperty("infinitude.gemini.model"));
         assertEquals("false", environment.getProperty("spring.mail.properties.mail.smtp.auth"));
+        assertEquals("mongodb://dotenv.example.invalid:27017/fixture",
+                Binder.get(environment).bind("spring.mongodb", MongoProperties.class).get().getUri());
+    }
+
+    @Test
+    void deploymentMongoUriOverridesLocalDotenv() throws IOException {
+        writeEnv(directory);
+        StandardEnvironment environment = isolatedEnvironment();
+        environment.getPropertySources().addFirst(new MapPropertySource("osEnvironment",
+                Map.of("MONGODB_URI", "mongodb://render.example.invalid:27017/deployment")));
+        environment.getPropertySources().addLast(new PropertiesPropertySource("applicationProperties",
+                PropertiesLoaderUtils.loadProperties(new ClassPathResource("application.properties"))));
+
+        processor.load(environment, directory);
+
+        assertEquals("mongodb://render.example.invalid:27017/deployment",
+                Binder.get(environment).bind("spring.mongodb", MongoProperties.class).get().getUri());
+    }
+
+    @Test
+    void missingMongoUriDoesNotFallBackToLocalhost() throws IOException {
+        StandardEnvironment environment = isolatedEnvironment();
+        environment.getPropertySources().addLast(new PropertiesPropertySource("applicationProperties",
+                PropertiesLoaderUtils.loadProperties(new ClassPathResource("application.properties"))));
+
+        processor.load(environment, directory);
+
+        assertThrows(IllegalArgumentException.class, () -> environment.getProperty("spring.mongodb.uri"));
     }
 
     @Test
@@ -176,6 +206,7 @@ class DotenvEnvironmentPostProcessorTests {
                 GEMINI_API_KEY=fixture-key
                 GEMINI_API_KEYS="fixture-first, fixture-second"
                 GEMINI_MODEL=fixture-model
+                MONGODB_URI=mongodb://dotenv.example.invalid:27017/fixture
                 """);
     }
 }

@@ -5,7 +5,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
-@SpringBootTest(properties = {"MAIL_HOST=smtp.test.invalid", "MAIL_FROM=no-reply@test.invalid"})
+@SpringBootTest(properties = {"MAIL_HOST=smtp.test.invalid", "MAIL_FROM=no-reply@test.invalid",
+		"MONGODB_URI=mongodb://localhost:27017/infinitude-test"})
 class BackendApplicationTests {
 
 	@MockitoBean
