@@ -13,9 +13,18 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.mail.MailSendException;
 import org.springframework.mail.javamail.JavaMailSender;
 import java.util.Properties;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.ByteBuffer;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Flow;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -94,6 +103,104 @@ class EmailServiceImplTests {
     void rejectsInvalidExpiryConfiguration() {
         assertThrows(IllegalStateException.class,
                 () -> new EmailServiceImpl(provider(sender), "smtp.example.com", "sender@example.com", 0));
+    }
+
+    @Test
+    void vercelModeDoesNotRequireOrResolveSmtpSender() {
+        ObjectProvider<JavaMailSender> mailProvider = provider(null);
+        assertDoesNotThrow(() -> new EmailServiceImpl(mailProvider, "", "sender@example.com", 300,
+                "vercel", "https://frontend.example.com/api/send-otp",
+                "fixture-secret-at-least-32-bytes-long"));
+        verify(mailProvider, never()).getIfAvailable();
+    }
+
+    @Test
+    void springStartsVercelDeliveryWithoutMailSenderBean() {
+        new ApplicationContextRunner()
+                .withUserConfiguration(EmailServiceImpl.class)
+                .withPropertyValues(
+                        "infinitude.email.delivery=vercel",
+                        "infinitude.email.relay-url=https://frontend.example.com/api/send-otp",
+                        "infinitude.email.relay-secret=fixture-secret-at-least-32-bytes-long",
+                        "MAIL_FROM=sender@example.com")
+                .run(context -> {
+                    assertNull(context.getStartupFailure());
+                    assertNotNull(context.getBean(EmailService.class));
+                    assertTrue(context.getBeansOfType(JavaMailSender.class).isEmpty());
+                });
+    }
+
+    @Test
+    void invalidDeliveryModeFailsAtStartup() {
+        assertThrows(IllegalStateException.class,
+                () -> new EmailServiceImpl(provider(sender), "smtp.example.com", "sender@example.com", 300,
+                        "unknown", "", ""));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void vercelDeliveryPreservesTemplateLogoAndPrivacyWithoutSmtp(CapturedOutput output) throws Exception {
+        HttpClient client = mock(HttpClient.class);
+        HttpClient.Builder builder = mock(HttpClient.Builder.class, RETURNS_SELF);
+        when(builder.build()).thenReturn(client);
+        HttpResponse<Object> response = mock(HttpResponse.class);
+        when(response.statusCode()).thenReturn(204);
+        when(client.send(any(), any())).thenReturn(response);
+        ObjectProvider<JavaMailSender> mailProvider = provider(null);
+        try (var clients = mockStatic(HttpClient.class)) {
+            clients.when(HttpClient::newBuilder).thenReturn(builder);
+            var service = new EmailServiceImpl(mailProvider, "", "sender@example.com", 300,
+                    "vercel", "https://frontend.example.com/api/send-otp",
+                    "fixture-secret-at-least-32-bytes-long");
+
+            service.sendOtpEmail("recipient@example.com", "123456", OtpPurpose.SIGNUP);
+        }
+
+        ArgumentCaptor<HttpRequest> capture = ArgumentCaptor.forClass(HttpRequest.class);
+        verify(client).send(capture.capture(), any());
+        HttpRequest request = capture.getValue();
+        byte[] content = requestBody(request);
+        assertTrue(content.length < 256 * 1024);
+        MimeMessage message = new MimeMessage(Session.getInstance(new Properties()),
+                new ByteArrayInputStream(content));
+        assertEquals("sender@example.com", message.getFrom()[0].toString());
+        assertEquals("recipient@example.com", message.getAllRecipients()[0].toString());
+        assertTrue(findHtml(message).contains("123456"));
+        assertTrue(findHtml(message).contains("5 minutes"));
+        assertTrue(hasInlineLogo(message));
+        verify(mailProvider, never()).getIfAvailable();
+        assertTrue(output.getAll().contains("OTP email dispatched"));
+        assertFalse(output.getAll().contains("123456"));
+        assertFalse(output.getAll().contains("recipient@example.com"));
+    }
+
+    private byte[] requestBody(HttpRequest request) {
+        var bytes = new ByteArrayOutputStream();
+        var complete = new CompletableFuture<byte[]>();
+        request.bodyPublisher().orElseThrow().subscribe(new Flow.Subscriber<ByteBuffer>() {
+            @Override
+            public void onSubscribe(Flow.Subscription subscription) {
+                subscription.request(Long.MAX_VALUE);
+            }
+
+            @Override
+            public void onNext(ByteBuffer buffer) {
+                byte[] chunk = new byte[buffer.remaining()];
+                buffer.get(chunk);
+                bytes.writeBytes(chunk);
+            }
+
+            @Override
+            public void onError(Throwable error) {
+                complete.completeExceptionally(error);
+            }
+
+            @Override
+            public void onComplete() {
+                complete.complete(bytes.toByteArray());
+            }
+        });
+        return complete.join();
     }
 
     private String findHtml(Part part) throws Exception {

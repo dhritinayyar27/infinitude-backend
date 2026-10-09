@@ -29,11 +29,14 @@ keep the Dockerfile and build context relative to that directory.
 | `JWT_SECRET` | A new high-entropy signing secret; generate one with `openssl rand -base64 48`. Never use the development default or example placeholder. |
 | `FRONTEND_ORIGIN` | Exact HTTPS frontend origin, without a trailing slash. |
 | `GEMINI_API_KEY` | Your server-side Gemini API key (or use `GEMINI_API_KEYS` for a key pool). |
-| `MAIL_HOST` | Your SMTP provider's hostname. Required for application startup. |
+| `MAIL_HOST` | Your SMTP provider's hostname. Required only for direct SMTP mode. |
 | `MAIL_PORT` | Your SMTP provider's submission port; defaults to `587`. |
 | `MAIL_USERNAME` | SMTP username. |
 | `MAIL_PASSWORD` | SMTP password or app password. |
 | `MAIL_FROM` | Verified sender email address. Required for application startup. |
+| `EMAIL_DELIVERY` | `smtp` (default) or `vercel` for server-to-server delivery through the frontend's Vercel function. |
+| `EMAIL_RELAY_URL` | Required in `vercel` mode: `https://YOUR-FRONTEND-DOMAIN/api/send-otp`. |
+| `EMAIL_RELAY_SECRET` | Required in `vercel` mode: shared random secret of at least 32 bytes, identical to Vercel's server-only value. |
 
 Other optional settings and defaults are listed in [.env.example](.env.example).
 `MONGODB_URI` is required; there is no hardcoded localhost fallback. Local
@@ -50,9 +53,9 @@ files, Git metadata, tests, and prebuilt `target` files are not included.
 - Allow the Render service's outbound IP addresses in your hosted MongoDB
   network configuration.
 - Render Free web services block outbound SMTP ports `25`, `465`, and `587`.
-  Since this backend delivers login/signup OTPs over SMTP, use a paid service
-  or an SMTP provider with a supported alternative submission port. Docker
-  does not bypass this restriction.
+  Use `EMAIL_DELIVERY=vercel` to send signed HTTPS requests to the Vercel function,
+  which sends via Gmail SMTP. Alternatively, use paid hosting or an SMTP provider
+  with a supported alternative port. Docker does not bypass this restriction.
 - Authentication uses a `Secure`, `SameSite=Strict` cookie. Serve the frontend
   and API over HTTPS on the same site (for example, `app.example.com` and
   `api.example.com`, or through a same-origin proxy). Unrelated frontend/API
@@ -67,6 +70,29 @@ files, Git metadata, tests, and prebuilt `target` files are not included.
 
 See Render's [Docker deployment guide](https://render.com/docs/docker) and
 [Free instance limitations](https://render.com/docs/free).
+
+## Gmail delivery through Vercel (Render Free)
+
+First deploy and configure the frontend's `/api/send-otp` function with Gmail app
+password credentials and Upstash Redis replay protection (see the frontend README).
+Then set the following in Render and redeploy:
+
+```text
+EMAIL_DELIVERY=vercel
+EMAIL_RELAY_URL=https://YOUR-FRONTEND-DOMAIN/api/send-otp
+EMAIL_RELAY_SECRET=<same random secret configured in Vercel>
+MAIL_FROM=<same Gmail address configured as GMAIL_USER in Vercel>
+```
+
+`MAIL_HOST`, `MAIL_PORT`, `MAIL_USERNAME`, and `MAIL_PASSWORD` are not needed in
+this mode. Gmail credentials belong only in Vercel's server environment.
+OTP generation, hashing, persistence, expiry, cooldowns, verification and generic
+authentication responses remain in Spring. Neither the generated OTP nor the
+relay secret is sent to the browser. Templates and inline images remain backend-owned.
+Relay calls use a 25-second timeout and do not retry automatically, to avoid
+duplicate messages after ambiguous delivery failures. A failed send is logged
+without sensitive details; the existing generic auth response is unchanged.
+Users can request a fresh OTP after the existing resend cooldown.
 
 ## Build and run locally with Docker
 

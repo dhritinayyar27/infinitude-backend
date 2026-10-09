@@ -2,11 +2,15 @@ package com.infinitude.email;
 
 import com.infinitude.model.OtpPurpose;
 import jakarta.mail.MessagingException;
+import jakarta.mail.Session;
+import jakarta.mail.internet.MimeMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.MailException;
+import org.springframework.mail.MailSendException;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
@@ -15,14 +19,14 @@ import org.springframework.util.StreamUtils;
 import org.springframework.web.util.HtmlUtils;
 
 import java.io.IOException;
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Properties;
 
 /**
- * Concrete {@link EmailService} using {@link JavaMailSender} (spring-boot-starter-mail), with
- * SMTP config sourced entirely from environment variables (§11, §17.4/§17.8 - never hardcoded,
- * never logged).
+ * OTP delivery via local SMTP or a signed, server-to-server Vercel relay.
  *
- * <p>SMTP configuration is required in every environment. OTPs are delivered only by email
+ * <p>Delivery configuration is required in every environment. OTPs are delivered only by email
  * and are never written to logs, including when delivery fails.</p>
  *
  * <p>Real send failures (e.g. bad credentials, SMTP outage) are caught and logged here rather
@@ -37,18 +41,34 @@ public class EmailServiceImpl implements EmailService {
     private static final Logger log = LoggerFactory.getLogger(EmailServiceImpl.class);
 
     private final JavaMailSender mailSender;
+    private final VercelEmailRelay relay;
     private final String mailFrom;
     private final long expirationSeconds;
     private final String template;
     private final ClassPathResource logo = new ClassPathResource("email/infinitude-logo.png");
 
     public EmailServiceImpl(ObjectProvider<JavaMailSender> mailSenderProvider,
+                             String mailHost, String mailFrom, long expirationSeconds) {
+        this(mailSenderProvider, mailHost, mailFrom, expirationSeconds, "smtp", "", "");
+    }
+
+    @Autowired
+    public EmailServiceImpl(ObjectProvider<JavaMailSender> mailSenderProvider,
                              @Value("${spring.mail.host:}") String mailHost,
                              @Value("${MAIL_FROM:}") String mailFrom,
-                             @Value("${OTP_EXPIRATION_SECONDS:300}") long expirationSeconds) {
-        JavaMailSender candidate = mailSenderProvider.getIfAvailable();
-        if (candidate == null || mailHost == null || mailHost.isBlank()
-                || mailFrom == null || mailFrom.isBlank()) {
+                             @Value("${OTP_EXPIRATION_SECONDS:300}") long expirationSeconds,
+                             @Value("${infinitude.email.delivery:smtp}") String delivery,
+                             @Value("${infinitude.email.relay-url:}") String relayUrl,
+                             @Value("${infinitude.email.relay-secret:}") String relaySecret) {
+        if (!"smtp".equals(delivery) && !"vercel".equals(delivery)) {
+            throw new IllegalStateException("EMAIL_DELIVERY must be smtp or vercel.");
+        }
+        this.relay = "vercel".equals(delivery) ? new VercelEmailRelay(relayUrl, relaySecret) : null;
+        JavaMailSender candidate = relay == null ? mailSenderProvider.getIfAvailable() : null;
+        if (mailFrom == null || mailFrom.isBlank()) {
+            throw new IllegalStateException("OTP email requires MAIL_FROM.");
+        }
+        if (relay == null && (candidate == null || mailHost == null || mailHost.isBlank())) {
             throw new IllegalStateException("OTP email requires SMTP configuration: set MAIL_HOST and MAIL_FROM, "
                     + "and configure MAIL_PORT, MAIL_USERNAME and MAIL_PASSWORD for your mail server.");
         }
@@ -71,14 +91,26 @@ public class EmailServiceImpl implements EmailService {
     @Override
     public void sendOtpEmail(String toEmail, String otp, OtpPurpose purpose) {
         try {
-            var mimeMessage = mailSender.createMimeMessage();
+            var mimeMessage = relay == null ? mailSender.createMimeMessage()
+                    : new MimeMessage(Session.getInstance(new Properties()));
             var message = new MimeMessageHelper(mimeMessage, true, StandardCharsets.UTF_8.name());
             message.setFrom(mailFrom);
             message.setTo(toEmail);
             message.setSubject(subjectFor(purpose));
             message.setText(bodyFor(otp, purpose), true);
             message.addInline("infinitude-logo", logo, "image/png");
-            mailSender.send(mimeMessage);
+            if (relay == null) {
+                mailSender.send(mimeMessage);
+            } else {
+                mimeMessage.saveChanges();
+                var content = new ByteArrayOutputStream();
+                try {
+                    mimeMessage.writeTo(content);
+                } catch (IOException ex) {
+                    throw new MailSendException("Unable to serialize OTP email.");
+                }
+                relay.send(toEmail, content.toByteArray());
+            }
             log.info("OTP email dispatched for purpose={} (recipient omitted from logs)", purpose);
         } catch (MailException | MessagingException ex) {
             log.error("Failed to send OTP email for purpose={} (error type={})", purpose,
