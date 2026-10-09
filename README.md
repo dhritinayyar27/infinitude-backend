@@ -58,8 +58,12 @@ files, Git metadata, tests, and prebuilt `target` files are not included.
   with a supported alternative port. Docker does not bypass this restriction.
 - Authentication uses a `Secure`, `SameSite=Strict` cookie. Serve the frontend
   and API over HTTPS on the same site (for example, `app.example.com` and
-  `api.example.com`, or through a same-origin proxy). Unrelated frontend/API
-  domains will prevent browser cookie authentication even if CORS is configured.
+  `api.example.com`, or through a same-origin proxy). The Vercel frontend now
+  proxies browser `/api/*` requests to Render, except its own `/api/send-otp`
+  function. Set `FRONTEND_ORIGIN=https://infinitudeai.vercel.app` without a
+  trailing slash and have users log in again after deploying the proxy.
+  Direct browser calls between unrelated frontend/API domains prevent cookie
+  authentication even if CORS and Axios credentials are configured.
 - Leave Render's HTTP health check path unset to use its default TCP check;
   this application does not currently expose a public health endpoint.
 - Render's filesystem is ephemeral. Keep persistent application data in MongoDB.
