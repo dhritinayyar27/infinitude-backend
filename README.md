@@ -2,6 +2,31 @@
 
 Spring Boot backend using Java 21, Maven, MongoDB, and the Gemini REST API.
 
+## Run locally with Maven
+
+Supply the required settings in the backend `.env`, then run from the backend
+directory:
+
+```powershell
+mvn spring-boot:run
+```
+
+The backend defaults to port `8080`. If startup reports that the port is already
+in use, identify the listener before stopping anything:
+
+```powershell
+Get-NetTCPConnection -LocalPort 8080 -State Listen |
+    Select-Object LocalAddress, LocalPort, OwningProcess
+Get-CimInstance Win32_Process -Filter "ProcessId = <PID>" |
+    Select-Object ProcessId, Name, CommandLine
+```
+
+Replace `<PID>` with the reported process ID. If it is a disposable mock API or
+an old backend instance, stop that specific process with `Stop-Process -Id <PID>`
+and rerun Maven. Do not stop an unrelated service. If the backend is already
+running through the VS Code **Run Infinitude backend** task, reuse it or terminate
+that task before starting another instance.
+
 ## Deploy on Render with Docker
 
 1. Push this backend repository, including [Dockerfile](Dockerfile) and
